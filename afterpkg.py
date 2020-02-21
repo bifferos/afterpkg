@@ -4,6 +4,7 @@
 """
 
 import os
+import argparse
 from pathlib import Path
 from configparser import ConfigParser
 
@@ -81,6 +82,25 @@ def build_package(dep_manager, script_manager, package_name, built):
     built.add(package_name)
 
 
+def build_packages(args):
+    dep = DependencyManager()
+    scripts = ScriptManager()
+    built_packages = set()
+    if args.packages:
+        for pkg_name in args.packages:
+            build_package(dep, scripts, pkg_name, built_packages)
+    else:
+        print()
+
+
+def main():
+    parser = argparse.ArgumentParser(prog='afterpkg')
+    parser.add_argument("packages", default=False, nargs="+",
+                        help="Package(s) to build")
+    args = parser.parse_args()
+    build_packages(args)
+
+
 if __name__ == "__main__":
-    build_package(DependencyManager(), ScriptManager(), "docker", set())
+    main()
 
