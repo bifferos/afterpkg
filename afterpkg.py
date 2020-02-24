@@ -693,21 +693,26 @@ def build_packages(args):
 
 def main():
     parser = argparse.ArgumentParser(prog='afterpkg',
-            description="Build and install packages from SBo-current. Afterpkg expects a full install of -current and "
-                        "the SBo repo to be found at ~/.afterpkg/slackbuilds/.  If not found it will be cloned there. "
-                        "By default most functionality is enabled, the options described below mostly DISABLE functionality")
+            description="Download, build and install packages from SBo-current. Afterpkg expects a full install of -current and "
+                        "the SBo repo to be found at ~/.afterpkg/slackbuilds/, if missing the ponce repo will be cloned there.  "
+                        "By default most functionality is enabled, the options described below mostly DISABLE things.")
 
     parser.add_argument("-s", "--slackbuilds", default=os.path.expanduser("~/.afterpkg/slackbuilds"),
-                        help="Specify the slackbuild directory.  The default is ~/.afterpkg/slackbuilds")
+                        help="Specify the slackbuild directory.  The default is ~/.afterpkg/slackbuilds.  This directory will be "
+                             "cloned from https://github.com/Ponce/slackbuilds.git if not present.  This will happen regardless "
+                             "of the -d flag (it's not counted as doing anything).  If you want a different repository make sure "
+                             "this exists before running.")
     parser.add_argument("-d", "--donothing", default=False, action="store_true",
-                        help="Don't actually build any packages, just list the steps that would be run")
+                        help="Don't actually do anything, just list the steps that would be run.  Note that this doesn't disable "
+                             "threading:  The steps will be output on different threads, just as any real task would, which "
+                             "means they can be executed in random order. If you don't like this don't use -d with -n")
     parser.add_argument("-n", "--numthreads", default="1",
-                        help="How many parallel builds to allow (default 1)")
+                        help="How many parallel operations to allow (default 1).  See also the -g option.")
     parser.add_argument("-c", "--nocolour", default=False, action="store_true",
-                        help="Parallel builds are normally coloured.  If you don't like vt100 escape codes in your output, use this option "
-                             "You can still distinguish threads by the output line prefix")
+                        help="Parallel builds are normally coloured.  If you don't like vt100 escape codes in your output, use "
+                             "this option. You can still distinguish threads by the output line prefix")
     parser.add_argument("-o", "--onlydownload", default=False, action="store_true",
-                        help="This will only download the package sources and not build, so you can run the rest of the build offline")
+                        help="This will only download the package sources and not build, so you can run the build offline")
     parser.add_argument("-v", "--novirtual", default=False, action="store_true",
                         help="Don't include any pip-installed Python packages in dependency computations (same as -2 and -3)")
     parser.add_argument("-2", "--nopip2", default=False, action="store_true",
@@ -716,14 +721,14 @@ def main():
                         help="Don't include pip3-installed Python packages in dependency computations")
     parser.add_argument("-p", "--pipinstall", default=False, action="store_true",
                         help="By default Python SBo packages will be built and installed as required. This option "
-                             "will pip install them instead.  Note that this option makes -o somewhat pointless, as it requires "
-                             "you to be online.  You can always pip install everything before you start, however.")
+                             "will pip install them instead.  Note that this makes -o somewhat pointless, as it requires "
+                             "you to be online.  You can always pip install everything first, however.")
     parser.add_argument("-b", "--before", default=False, action="store_true",
-                        help="Don't include 'before' scripts")
+                        help="Don't execute any 'before' scripts.  These scripts will get sourced before building the package.")
     parser.add_argument("-a", "--after", default=False, action="store_true",
-                        help="Don't include 'after' scripts")
+                        help="Don't execute any 'after' scripts.  These scripts will get sourced after building the package.")
     parser.add_argument("-r", "--requires", default=False, action="store_true",
-                        help="Don't execute 'requires' scripts.  These scripts will get executed before executing the builds of "
+                        help="Don't execute any 'requires' scripts.  These scripts will get sourced before executing the builds of "
                              "dependent packages.")
     parser.add_argument("-g", "--getinparallel", default=False, action="store_true",
                         help="Normally downloads will be one-by-one.  This will run them in parallel (up to --numthreads)")
