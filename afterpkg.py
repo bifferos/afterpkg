@@ -1,8 +1,24 @@
 #!/usr/bin/env python3
-
 """
-    Copyright(c) 2020 Bifferos@gmail.com
-    Parallel-tasking Slack builds with dependency resolution.
+    Copyright(c) 2020 bifferos@gmail.com UK
+    All rights reserved.
+
+    Redistribution and use of this script, with or without modification, is
+    permitted provided that the following conditions are met:
+
+    1. Redistributions of this script must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+     THIS SOFTWARE IS PROVIDED BY THE AUTHOR "AS IS" AND ANY EXPRESS OR IMPLIED
+     WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+     MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO
+     EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+     SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+     PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+     OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+     WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+     OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+     ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
 import os
@@ -14,6 +30,7 @@ import sys
 import json
 import copy
 import shutil
+import hashlib
 import tempfile
 from subprocess import Popen, PIPE
 from threading  import Thread, Lock, get_ident
@@ -21,14 +38,10 @@ from queue import Queue, Empty
 import xmlrpc.client as xmlrpclib
 import pickle
 from urllib.parse import urlparse
-import getpass
+import glob
 
 
 HOME = Path.home()
-if getpass.getuser() != "root":
-    print("sorry, root users only")
-    sys.exit(1)
-
 
 INSTALLED_PACKAGES_DIR = Path("/var/lib/pkgtools/packages")
 
@@ -40,7 +53,6 @@ AFTERPKG_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOAD_PKG_DIR = AFTERPKG_DIR / "downloads"
 DOWNLOAD_PKG_DIR.mkdir(parents=True, exist_ok=True)
 
-SBO_DIR = AFTERPKG_DIR / "slackbuilds"
 SCRIPTS_DIR = AFTERPKG_DIR / "scripts"
 BOT_WORKING_DIRS = AFTERPKG_DIR / "bots"
 PYPI_PICKLE = AFTERPKG_DIR / "pypi.pickle"
@@ -80,7 +92,7 @@ def list_local_pip_packages(version):
         Empty version string == py2, '3' == py3
     """
     command = "pip%s list --format json" % version
-    p = Popen(command, stdout=PIPE, shell=True)
+    p = Popen(command, stdout=PIPE, stderr=PIPE, shell=True)
     sout, err = p.communicate("")
     out = set()
     for d in json.loads(sout):
@@ -119,7 +131,13 @@ def read_info(path):
         options = cfg.options(section)
         result = {}
         for option in options:
-            result[option] = cfg.get(section, option).strip('"')
+            value = cfg.get(section, option).strip('"')
+            if option in ["REQUIRES", "MD5SUM_x86_64", "DOWNLOAD_x86_64", "DOWNLOAD", "MD5SUM"]:
+                if value == '':
+                    value = []
+                else:
+                    value = value.split(" ")
+            result[option] = value
         return result
 
 
@@ -156,6 +174,10 @@ sbo_to_pypi_specials = [
 class DependencyManager:
     def __init__(self, path, novirtual):
         """path is the root of slackbuilds"""
+        if not path.exists():
+            print("No slackbuilds directory found at %s." % path)
+            os.system("git -C %s clone https://github.com/Ponce/slackbuilds.git" % AFTERPKG_DIR)
+
         self.ignore = {"%README%", ""}
         self.package_dirs = {}
         self.pySBo_all = set()
@@ -258,19 +280,22 @@ class DependencyManager:
         return False
 
 
-    def lookup_deps(self, pkg):
+    def lookup_deps(self, pkg, remove_local=True):
         """
             Find the SBo defined deps (.info file) for a given package
             Remove any installed packages we're not interested in building those.
             We don't count non-SBo packages as dependencies.  They can't be installed anyhow so there's no point.
         """
+        if pkg not in self.package_dirs:
+            return None
         pkg_info = self.package_dirs[pkg] / (pkg + ".info")
-        deps = set(read_info(pkg_info)["REQUIRES"].split(" "))
+        deps = set(read_info(pkg_info)["REQUIRES"])
         deps -= self.ignore
         out = set()
         for dep in deps:
-            if self.has_local_package(dep):
-                continue
+            if remove_local:
+                if self.has_local_package(dep):
+                    continue
             if self.is_sbo_pkg(dep):
                 out.add(dep)
         return out
@@ -290,11 +315,12 @@ class ScriptManager:
     def __init__(self, path, args):
         self.before = {}
         self.after = {}
+        self.requires = {}
         for category in path.iterdir():
             if not category.is_dir() or category.name.startswith("."):
                 continue
             for package in category.iterdir():
-                for script in ["before", "after"]:
+                for script in ["before", "after", "requires"]:
                     if not getattr(args, script):
                         location = package / ("%s.sh" % script)
                         if location.exists():
@@ -304,10 +330,13 @@ class ScriptManager:
         if package in self.before:
             return self.before[package]
 
-
     def get_after(self, package):
         if package in self.after:
             return self.after[package]
+            
+    def get_requires(self, package):
+        if package in self.requires:
+            return self.requires[package]
 
 
 def output_thread(fp, console_q, quit_q, package, bot_index):
@@ -325,27 +354,32 @@ def output_thread(fp, console_q, quit_q, package, bot_index):
     quit_q.put(get_ident())
 
 
-def get_built_package_location(name):
-    rex = re.compile("^(.*)-([^-]*)-([^-]*)-([^-]*)$")
-    for path in Path("/tmp").iterdir():
-        m = rex.match(path.stem)
-        if m:
-            if name == m.group(1):
-                return path
+def get_built_package_location(name, info_dict):
+    prefix = f"/tmp/{name}-" + info_dict["VERSION"] + "-*"
+    paths = glob.glob(prefix)
+    if len(paths) == 1:
+        return paths[0]
     raise ValueError("Unable to find built package location, build may have failed.")
 
 
 class Runner:
-    def __init__(self, working_dir, console, package, bot_index):
+    def __init__(self, working_dir, console, package, bot_index, donothing):
         self.working_dir = working_dir
         self.console = console
         self.package = package
         self.bot_index = bot_index
+        self.donothing = donothing
 
     def exec(self, command):
-        """"Execute a command from a bot thread"""
-        open_handles = {}
+        if self.donothing:
+            self.run('echo "%s"' % command)
+        else:
+            self.run(command)
 
+    def run(self, command):
+        """"Execute a command from a bot thread"""
+
+        open_handles = {}
         p = Popen(command, stdout=PIPE, stderr=PIPE, shell=True, bufsize=0, cwd=str(self.working_dir))
 
         console_quit_q = Queue()
@@ -370,13 +404,60 @@ class Runner:
                 pass
 
 
+def md5_sum(path):
+    """Get the checksum of the passed path or None if non-existent"""
+    if not path.exists():
+        return None
+    hash_obj = hashlib.md5()
+    with path.open("rb") as fp:
+        block = True
+        while block:
+            block = fp.read(0x100000)
+            hash_obj.update(block)
+    return hash_obj.hexdigest().lower()
+
+
+def required_source_files(info_dict):
+    """Return a list of tuples of the [(url, fname and checksum), ...]"""
+    urls = info_dict["DOWNLOAD_x86_64"]
+    checksums = info_dict["MD5SUM_x86_64"]
+    if not urls:
+        urls = info_dict["DOWNLOAD"]
+        checksums = info_dict["MD5SUM"]
+    files = [Path(urlparse(url).path).name for url in urls]
+    return zip(urls, files, checksums)
+
+
+def download_file_commands(info_dict, download_dir):
+    download_dir.mkdir(parents=True, exist_ok=True)
+    commands = []
+    for url, fname, checksum in required_source_files(info_dict):
+        download_location = download_dir / fname
+        if md5_sum(download_location) != checksum:
+            command = "wget -O %s %s" % (download_location, url)
+            commands.append((command, download_location))
+    return commands
+
+
+class JobContext:
+    def __init__(self, queue, package):
+        self.queue = queue
+        self.package = package
+    def __enter__(self):
+        pass
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self.queue.put(self.package)
+        else:
+            self.queue.put(None)
+
+
 def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
     """
         build and install packages named on job_q, push name to done_q when done.  console and bot_index are passed on
         Signal it's over with quit_q
     """
-    working_dir = BOT_WORKING_DIRS / ("%d" % bot_index)
-
+    bot_working_dir = BOT_WORKING_DIRS / ("%d" % bot_index)
     download_lock = DOWNLOAD_LOCK if args.getinparallel else NoOpLock()
 
     package = True
@@ -385,91 +466,84 @@ def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
         if package is None:
             return
 
-        runner = Runner(working_dir, console, package, bot_index)
+        with JobContext(done_q, package):
 
-        if args.pipinstall:
-            # Have a go at installing with pip.  If we can't still try to let SBo do it
-            if dep_manager.is_python_package(package):
-                pypi = dep_manager.sbo_to_pypi(package)
-                pip_ver = dep_manager.get_pip_version(package)
-                with INSTALLER_LOCK:
-                    if args.donothing:
-                        runner.exec('echo %s install %s' % (pip_ver, pypi))
-                    else:
-                        runner.exec('echo %s install %s' % (pip_ver, pypi))
+            working_dir = bot_working_dir / package
 
-                done_q.put(package)
+            src_path = dep_manager.get_source_location(package)
+            info = src_path / (package + ".info")
+            runner = Runner(working_dir, console, package, bot_index, args.donothing)
+
+            if args.pipinstall:
+                # Have a go at installing with pip.  If we can't still try to let SBo do it
+                if dep_manager.is_python_package(package):
+                    pypi = dep_manager.sbo_to_pypi(package)
+                    pip_ver = dep_manager.get_pip_version(package)
+                    with INSTALLER_LOCK:
+                        runner.exec('%s install %s' % (pip_ver, pypi))
+                    continue
+
+            if not args.donothing:
+                if working_dir.exists():
+                    shutil.rmtree(working_dir)
+                # Working dir
+                shutil.copytree(src_path, working_dir)
+            else:
+                working_dir.mkdir(parents=True, exist_ok=True)
+
+            # Download step
+            info_dict = read_info(info)
+            category = dep_manager.get_source_location(package).parent.name
+            download_dir = DOWNLOAD_PKG_DIR / category / package
+            for command, location in download_file_commands(info_dict, download_dir):
+                with download_lock:
+                    runner.exec(command)
+                    runner.exec("cp %s %s" % (location, working_dir / location.name))
+
+            if args.onlydownload:
                 continue
 
-        if working_dir.exists():
-            shutil.rmtree(working_dir)
+            handle, temp_wrapper = tempfile.mkstemp(suffix=".sh", dir=working_dir, text=False)
+            os.close(handle)
 
-        # Working dir
-        src_path = dep_manager.get_source_location(package)
-        shutil.copytree(src_path, working_dir)
-
-        info = working_dir / (package + ".info")
-
-        # Download step
-        urls = read_info(info)["DOWNLOAD_x86_64"]
-        if not urls:
-            urls = read_info(info)["DOWNLOAD"]
-        with download_lock:
-            if args.donothing:
-                runner.exec("echo Downloading %s" % urls)
-            else:
-                category = dep_manager.get_source_location(package).parent.name
-                download_dir = DOWNLOAD_PKG_DIR / category / package
-                download_dir.mkdir(parents=True, exist_ok=True)
-                for url in urls.split(" "):
-                    url_parsed = urlparse(url)
-                    file_name = Path(url_parsed.path).name
-                    download_location = download_dir / file_name
-                    if not download_location.exists():
-                        runner.exec("wget -O %s %s" % (download_location, url))
-                    shutil.copyfile(download_location, working_dir / file_name)
-
-        if args.onlydownload:
-            done_q.put(package)
-            continue
-
-        handle, temp_wrapper = tempfile.mkstemp(suffix=".sh", dir=working_dir, text=False)
-        os.close(handle)
-
-        total_script = b'#!/bin/sh\n'
-        before = scripts.get_before(package)
-        if before:
-            if args.donothing:
-                total_script += ('echo "Running before script for %s"\n' % package).encode("utf-8")
-            else:
+            total_script = b'#!/bin/sh\n'
+            before = scripts.get_before(package)
+            if before:
+                if args.donothing:
+                    runner.exec('Running *before* script for %s' % package)
                 total_script += before.open("rb").read()
 
-        build_script = working_dir / (package + ".SlackBuild")
-        if args.donothing:
-            total_script += ('echo "Running build script %s"\n' % (package + ".SlackBuild")).encode("utf-8")
-        else:
-            total_script += build_script.open("rb").read()
+            for dep_package in dep_manager.lookup_deps(package, False):
+                requires = scripts.get_requires(dep_package)
+                if requires:
+                    if args.donothing:
+                        runner.exec('Running *requires* script for %s' % dep_package)
+                    total_script += requires.open("rb").read()
 
-
-        after = scripts.get_after(package)
-        if after:
+            build_script = working_dir / (package + ".SlackBuild")
             if args.donothing:
-                total_script += ('echo "Running after script for %s"\n' % package).encode("utf-8")
+                runner.exec('Running *build* script %s' % (package + ".SlackBuild"))
             else:
+                total_script += build_script.open("rb").read()
+
+
+            after = scripts.get_after(package)
+            if after:
+                if args.donothing:
+                    runner.exec('Running *after* script for %s' % package)
                 total_script += after.open("rb").read()
 
-        open(temp_wrapper, "wb").write(total_script)
-        os.chmod(temp_wrapper, 0o755)
-        runner.exec(temp_wrapper)
+            if not args.donothing:
+                open(temp_wrapper, "wb").write(total_script)
+                os.chmod(temp_wrapper, 0o755)
+                runner.exec(temp_wrapper)
 
-        with INSTALLER_LOCK:
-            if args.donothing:
-                runner.exec('echo "installing %s"' % package)
-            else:
-                built_location = get_built_package_location(package)
+            with INSTALLER_LOCK:
+                built_location = "/tmp/%s-%s-...tgz" % (package, info_dict["VERSION"])
+                if not args.donothing:
+                    built_location = get_built_package_location(package, info_dict)
                 runner.exec("installpkg %s" % str(built_location))
 
-        done_q.put(package)
 
 
 COLOURS = {
@@ -559,6 +633,10 @@ def start_build_engine(dep_manager, packages, scripts, args):
 
         # Wait for a package to get built, then re-assess which packages are ready.
         done = done_q.get(True)
+        if done is None:
+            print("There was an error, shutting down...")
+            break
+
         built.add(done)
 
 
@@ -581,6 +659,9 @@ def resolve_dependencies(dep_manager, package_name, resolved):
         Ends up with a list of all packages that need to be built in resolved.
     """
     deps = dep_manager.lookup_deps(package_name)
+    if deps is None:
+        print("Package %r not found" % package_name)
+        sys.exit(1)
     # It's nice if the queue is ordered the same way on each run.  This won't necessarily be build
     # order though, unless there's only one thread.
     sort_deps = list(deps)
@@ -596,7 +677,7 @@ def resolve_dependencies(dep_manager, package_name, resolved):
 
 
 def build_packages(args):
-    dep_manager = DependencyManager(SBO_DIR, args.novirtual)
+    dep_manager = DependencyManager(Path(args.slackbuilds), args.novirtual)
     scripts = ScriptManager(SCRIPTS_DIR, args)
 
     resolved = []
@@ -612,10 +693,12 @@ def build_packages(args):
 
 def main():
     parser = argparse.ArgumentParser(prog='afterpkg',
-            description="Build and install packages from an SBo repo. Afterpkg expects a full install of -current and "
-                        "the SBo repo to be found at ~/.afterpkg/slackbuilds/.  You will need to clone or copy it there. "
+            description="Build and install packages from SBo-current. Afterpkg expects a full install of -current and "
+                        "the SBo repo to be found at ~/.afterpkg/slackbuilds/.  If not found it will be cloned there. "
                         "By default most functionality is enabled, the options described below mostly DISABLE functionality")
 
+    parser.add_argument("-s", "--slackbuilds", default=os.path.expanduser("~/.afterpkg/slackbuilds"),
+                        help="Specify the slackbuild directory.  The default is ~/.afterpkg/slackbuilds")
     parser.add_argument("-d", "--donothing", default=False, action="store_true",
                         help="Don't actually build any packages, just list the steps that would be run")
     parser.add_argument("-n", "--numthreads", default="1",
@@ -636,16 +719,16 @@ def main():
                              "will pip install them instead.  Note that this option makes -o somewhat pointless, as it requires "
                              "you to be online.  You can always pip install everything before you start, however.")
     parser.add_argument("-b", "--before", default=False, action="store_true",
-                        help="Don't include before scripts")
+                        help="Don't include 'before' scripts")
     parser.add_argument("-a", "--after", default=False, action="store_true",
-                        help="Don't include after scripts")
-    parser.add_argument("-i", "--install", default=False, action="store_true",
-                        help="Install only the minimum.  Only build-time dependencies of other packages will be installed. "
-                             "By default all packages will be installed.")
+                        help="Don't include 'after' scripts")
+    parser.add_argument("-r", "--requires", default=False, action="store_true",
+                        help="Don't execute 'requires' scripts.  These scripts will get executed before executing the builds of "
+                             "dependent packages.")
     parser.add_argument("-g", "--getinparallel", default=False, action="store_true",
                         help="Normally downloads will be one-by-one.  This will run them in parallel (up to --numthreads)")
     parser.add_argument("-q", "--queue", default=False, action="store_true",
-                        help="Just print the queue of builds, similar to what sqj would generate. You can use afterpkg to only "
+                        help="Just print the queue of builds, similar to what sqg would generate. You can use afterpkg to only "
                         "compute dependencies, generate an sbopkg queue and then run the builds with sbopkg if you prefer.")
 
     parser.add_argument("packages", default=False, nargs="+",
