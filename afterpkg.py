@@ -62,6 +62,18 @@ INSTALLER_LOCK = Lock()
 DOWNLOAD_LOCK = Lock()
 
 
+def find_scripts_location():
+    """Is this script running from git"""
+    # If this is running from a git repo, scripts are in subdirs.
+    p = Popen("git rev-parse --git-dir", stdout=PIPE, stderr=PIPE, shell=True, cwd=sys.path[0])
+    sout, serr = p.communicate("")
+    if p.returncode == 0:
+        return Path(sys.path[0]) / "scripts"
+    else:
+        # Otherwise look for scripts in ~/.afterpkg/scripts
+        return AFTERPKG_DIR / "scripts"
+
+
 class NoOpLock:
     def __enter__(self):
         pass
@@ -313,14 +325,15 @@ class DependencyManager:
 
 class ScriptManager:
     def __init__(self, path, args):
-        self.before = {}
-        self.after = {}
-        self.requires = {}
+        self.script_types = ["before", "after", "requires"]
+        for script in self.script_types:
+            setattr(self, script, {})
         for category in path.iterdir():
+            setattr(self, "before", {})
             if not category.is_dir() or category.name.startswith("."):
                 continue
             for package in category.iterdir():
-                for script in ["before", "after", "requires"]:
+                for script in self.script_types:
                     if not getattr(args, script):
                         location = package / ("%s.sh" % script)
                         if location.exists():
@@ -678,7 +691,7 @@ def resolve_dependencies(dep_manager, package_name, resolved):
 
 def build_packages(args):
     dep_manager = DependencyManager(Path(args.slackbuilds), args.novirtual)
-    scripts = ScriptManager(SCRIPTS_DIR, args)
+    scripts = ScriptManager(find_scripts_location(), args)
 
     resolved = []
     for package in args.packages:
