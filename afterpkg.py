@@ -313,6 +313,34 @@ class DependencyManager:
         return out
 
 
+    def _resolve_dependencies(self, package_name, resolved, remove_local):
+        """
+            Ends up with a list of all packages that need to be built in resolved.
+        """
+        deps = self.lookup_deps(package_name, remove_local)
+        if deps is None:
+            print("Package %r not found" % package_name)
+            sys.exit(1)
+        # It's nice if the queue is ordered the same way on each run.  This won't necessarily be build
+        # order though, unless there's only one thread.
+        sort_deps = list(deps)
+        sort_deps.sort()
+        for dep in sort_deps:
+            self._resolve_dependencies(dep, resolved, remove_local)
+        if package_name in resolved:
+            return
+        if remove_local:
+            if self.has_local_package(package_name):
+                return
+        resolved.append(package_name)
+
+
+    def resolve_dependencies(self, package_name, remove_local=True):
+        resolved = []
+        self._resolve_dependencies(package_name, resolved, remove_local)
+        return resolved
+
+
     def get_source_location(self, name):
         """Get the path to the SBo SlackBuild Directory"""
         return self.package_dirs[name]
@@ -447,7 +475,7 @@ def download_file_commands(info_dict, download_dir):
     for url, fname, checksum in required_source_files(info_dict):
         download_location = download_dir / fname
         if md5_sum(download_location) != checksum:
-            command = "wget -O %s %s" % (download_location, url)
+            command = "wget --no-check-certificate -O %s %s" % (download_location, url)
             commands.append((command, download_location))
     return commands
 
@@ -511,7 +539,9 @@ def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
             for command, location in download_file_commands(info_dict, download_dir):
                 with download_lock:
                     runner.exec(command)
-                    runner.exec("cp %s %s" % (location, working_dir / location.name))
+                    
+            for url, file_name, checksum in required_source_files(info_dict):
+                runner.exec("cp %s %s" % (download_dir / file_name, working_dir / file_name))
 
             if args.onlydownload:
                 continue
@@ -526,7 +556,7 @@ def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
                     runner.exec('Running *before* script for %s' % package)
                 total_script += before.open("rb").read()
 
-            for dep_package in dep_manager.lookup_deps(package, False):
+            for dep_package in dep_manager.resolve_dependencies(package, False):
                 requires = scripts.get_requires(dep_package)
                 if requires:
                     if args.donothing:
@@ -667,35 +697,13 @@ def start_build_engine(dep_manager, packages, scripts, args):
     console_controller.join()
 
 
-def resolve_dependencies(dep_manager, package_name, resolved):
-    """
-        Ends up with a list of all packages that need to be built in resolved.
-    """
-    deps = dep_manager.lookup_deps(package_name)
-    if deps is None:
-        print("Package %r not found" % package_name)
-        sys.exit(1)
-    # It's nice if the queue is ordered the same way on each run.  This won't necessarily be build
-    # order though, unless there's only one thread.
-    sort_deps = list(deps)
-    sort_deps.sort()
-    for dep in sort_deps:
-        resolve_dependencies(dep_manager, dep, resolved)
-    if package_name in resolved:
-        return
-    if dep_manager.has_local_package(package_name):
-        print("# Skipping build of %s, already installed" % package_name)
-        return
-    resolved.append(package_name)
-
-
 def build_packages(args):
     dep_manager = DependencyManager(Path(args.slackbuilds), args.novirtual)
     scripts = ScriptManager(find_scripts_location(), args)
 
     resolved = []
     for package in args.packages:
-        resolve_dependencies(dep_manager, package, resolved)
+        resolved += dep_manager.resolve_dependencies(package, True)
 
     if args.queue:
         for package in resolved:
