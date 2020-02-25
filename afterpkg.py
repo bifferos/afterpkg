@@ -66,7 +66,7 @@ def find_scripts_location():
     """Is this script running from git"""
     # If this is running from a git repo, scripts are in subdirs.
     p = Popen("git rev-parse --git-dir", stdout=PIPE, stderr=PIPE, shell=True, cwd=sys.path[0])
-    sout, serr = p.communicate("")
+    _, _ = p.communicate("")
     if p.returncode == 0:
         return Path(sys.path[0]) / "scripts"
     else:
@@ -212,7 +212,10 @@ class DependencyManager:
 
 
     def is_python_package(self, name):
-        """It would be nice if all SBo python packages started python- but they don't"""
+        """
+            TODO:  Figure out the combined python2-3 packages and what to do with them.
+            Also this function is way too crude right now.
+        """
         # Is it in the python category?
         path = self.package_dirs[name]
         if path.parent.name == "python":
@@ -225,12 +228,17 @@ class DependencyManager:
         txt = build_script.open("rb").read()
         if txt.find(b"python setup.py install ") != -1:
             return True
+        if txt.find(b"python3 setup.py install ") != -1:
+            return True
         # Then I guess it's not a python package.
         return False
 
 
     def get_pip_version(self, name):
-        """Figure out the pip version needed to install said package.  Basically use pip3 for anything python3-"""
+        """
+            Figure out the pip version needed to install said package.  Basically use pip3 for anything python3-
+            This is naive to say the least.
+        """
         m = self.pip_rex.match(name)
         if not m:
             return "pip"
@@ -301,43 +309,41 @@ class DependencyManager:
         if pkg not in self.package_dirs:
             return None
         pkg_info = self.package_dirs[pkg] / (pkg + ".info")
-        deps = set(read_info(pkg_info)["REQUIRES"])
-        deps -= self.ignore
-        out = set()
-        for dep in deps:
+        deps = []
+        for dep in read_info(pkg_info)["REQUIRES"]:
+            if dep in self.ignore:
+                continue
+            if not self.is_sbo_pkg(dep):
+                continue
             if remove_local:
                 if self.has_local_package(dep):
                     continue
-            if self.is_sbo_pkg(dep):
-                out.add(dep)
-        return out
+            deps.append(dep)
+        return deps
 
 
-    def _resolve_dependencies(self, package_name, resolved, remove_local):
+    def _resolve_dependencies(self, package_names, resolved, remove_local):
         """
             Ends up with a list of all packages that need to be built in resolved.
         """
-        deps = self.lookup_deps(package_name, remove_local)
-        if deps is None:
-            print("Package %r not found" % package_name)
-            sys.exit(1)
-        # It's nice if the queue is ordered the same way on each run.  This won't necessarily be build
-        # order though, unless there's only one thread.
-        sort_deps = list(deps)
-        sort_deps.sort()
-        for dep in sort_deps:
-            self._resolve_dependencies(dep, resolved, remove_local)
-        if package_name in resolved:
-            return
-        if remove_local:
-            if self.has_local_package(package_name):
-                return
-        resolved.append(package_name)
+        for package_name in package_names:
+            if package_name in resolved:
+                continue
+            deps = self.lookup_deps(package_name, remove_local)
+            if deps is None:
+                print("Package %r not found" % package_name)
+                sys.exit(1)
+            
+            # It's nice if the queue is ordered the same way on each run.  This won't necessarily be build
+            # order though, unless there's only one thread.
+            if deps:
+                self._resolve_dependencies(deps, resolved, remove_local)
+            resolved.append(package_name)
 
 
-    def resolve_dependencies(self, package_name, remove_local=True):
+    def resolve_dependencies(self, package_names, remove_local=True):
         resolved = []
-        self._resolve_dependencies(package_name, resolved, remove_local)
+        self._resolve_dependencies(package_names, resolved, remove_local)
         return resolved
 
 
@@ -354,10 +360,12 @@ class DependencyManager:
 class ScriptManager:
     def __init__(self, path, args):
         self.script_types = ["before", "after", "requires"]
+        self.before = {}
+        self.after = {}
+        self.requires = {}
         for script in self.script_types:
             setattr(self, script, {})
         for category in path.iterdir():
-            setattr(self, "before", {})
             if not category.is_dir() or category.name.startswith("."):
                 continue
             for package in category.iterdir():
@@ -498,7 +506,11 @@ def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
         build and install packages named on job_q, push name to done_q when done.  console and bot_index are passed on
         Signal it's over with quit_q
     """
-    bot_working_dir = BOT_WORKING_DIRS / ("%d" % bot_index)
+    bot_working_dir = BOT_WORKING_DIRS / ("%02d" % bot_index)
+    if bot_working_dir.exists():
+        shutil.rmtree(bot_working_dir)
+
+    job_count = 0
     download_lock = DOWNLOAD_LOCK if args.getinparallel else NoOpLock()
 
     package = True
@@ -508,8 +520,9 @@ def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
             return
 
         with JobContext(done_q, package):
+            job_count += 1
 
-            working_dir = bot_working_dir / package
+            working_dir = bot_working_dir / ("%03x_%s" % (job_count, package))
 
             src_path = dep_manager.get_source_location(package)
             info = src_path / (package + ".info")
@@ -556,7 +569,7 @@ def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
                     runner.exec('Running *before* script for %s' % package)
                 total_script += before.open("rb").read()
 
-            for dep_package in dep_manager.resolve_dependencies(package, False):
+            for dep_package in dep_manager.resolve_dependencies([package], False):
                 requires = scripts.get_requires(dep_package)
                 if requires:
                     if args.donothing:
@@ -622,8 +635,7 @@ def console_thread(console_q, args):
 
 
 def bot_controller_thread(job_q, done_q, console_q, dep_manager, scripts, args):
-    """Fire up a thread per build bot"""
-
+    """Fire up a thread per build bot"""        
     bot_threads = []
 
     int(args.numthreads)
@@ -637,20 +649,17 @@ def bot_controller_thread(job_q, done_q, console_q, dep_manager, scripts, args):
         thread.join()
 
 
-def get_leaf_packages(packages, dep_manager, built):
-    """Return the set of packages with no deps other than the ones built"""
-    out = set()
-    for package in packages:
-        deps = dep_manager.lookup_deps(package)
-        if deps - built:
-            continue
-        out.add(package)
-    return out
+def write_bot_status(ident, value):
+    bot_status = BOT_WORKING_DIRS / f"{ident}.txt"
+    bot_data = "\n".join(value) + "\n"
+    bot_status.open("wb").write(bot_data.encode("utf-8"))
 
 
 def start_build_engine(dep_manager, packages, scripts, args):
     """packages is the list of packages to build"""
-
+    
+    BOT_WORKING_DIRS.mkdir(parents=True, exist_ok=True)
+    
     job_q = Queue()
     done_q = Queue()
     console_q = Queue()
@@ -660,19 +669,30 @@ def start_build_engine(dep_manager, packages, scripts, args):
     console_controller.daemon = True
     console_controller.start()
 
+    for path in BOT_WORKING_DIRS.iterdir():
+        if path.is_dir():
+            shutil.rmtree(path)
+
     # This thread controls the bots.
     bot_controller = Thread(target=bot_controller_thread, args=(job_q, done_q, console_q, dep_manager, scripts, args))
     bot_controller.daemon = True
     bot_controller.start()
 
-    remaining = copy.copy(packages)
+    pending = copy.copy(packages)
     built = set()
 
-    while remaining:
+    while pending:
         # Figure out the set of packages that we can queue.  These will be the ones with no (un-built) dependencies.
-        for package in get_leaf_packages(remaining, dep_manager, built):
+        queued = []
+        for package in pending:
+            if set(dep_manager.lookup_deps(package)) - built:
+                continue
             job_q.put(package)
-            remaining.remove(package)
+            queued.append(package)
+            
+        pending = [i for i in pending if i not in queued]
+        write_bot_status("pending", pending)
+        write_bot_status("built", built)
 
         # Wait for a package to get built, then re-assess which packages are ready.
         done = done_q.get(True)
@@ -701,9 +721,7 @@ def build_packages(args):
     dep_manager = DependencyManager(Path(args.slackbuilds), args.novirtual)
     scripts = ScriptManager(find_scripts_location(), args)
 
-    resolved = []
-    for package in args.packages:
-        resolved += dep_manager.resolve_dependencies(package, True)
+    resolved = dep_manager.resolve_dependencies(args.packages, True)
 
     if args.queue:
         for package in resolved:
