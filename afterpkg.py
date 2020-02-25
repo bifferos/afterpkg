@@ -39,6 +39,7 @@ import xmlrpc.client as xmlrpclib
 import pickle
 from urllib.parse import urlparse
 import glob
+import fcntl
 
 
 HOME = Path.home()
@@ -56,6 +57,8 @@ DOWNLOAD_PKG_DIR.mkdir(parents=True, exist_ok=True)
 SCRIPTS_DIR = AFTERPKG_DIR / "scripts"
 BOT_WORKING_DIRS = AFTERPKG_DIR / "bots"
 PYPI_PICKLE = AFTERPKG_DIR / "pypi.pickle"
+
+LOCKFILE = AFTERPKG_DIR / "lock.lck"
 
 # Use for both the installpkg and pip install steps.
 INSTALLER_LOCK = Lock()
@@ -659,7 +662,7 @@ def start_build_engine(dep_manager, packages, scripts, args):
     """packages is the list of packages to build"""
     
     BOT_WORKING_DIRS.mkdir(parents=True, exist_ok=True)
-    
+        
     job_q = Queue()
     done_q = Queue()
     console_q = Queue()
@@ -727,7 +730,14 @@ def build_packages(args):
         for package in resolved:
             print(package)
     else:
-        start_build_engine(dep_manager, resolved, scripts, args)
+        with LOCKFILE.open("wb") as fp:
+            try:
+                if not args.donothing:
+                    fcntl.flock(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                print("afterpkg is already running, only a single instance is allowed.")
+                sys.exit(1)
+            start_build_engine(dep_manager, resolved, scripts, args)
 
 
 def main():
