@@ -21,52 +21,85 @@
      ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
-import os
-import re
 import argparse
-from pathlib import Path
-from configparser import ConfigParser
-import sys
-import json
 import copy
-import shutil
-import hashlib
-import tempfile
-from subprocess import Popen, PIPE
-from threading  import Thread, Lock, get_ident
-from queue import Queue, Empty
-import xmlrpc.client as xmlrpclib
+import json
+import os
 import pickle
+import re
+import sys
+import time
+
+from configparser import ConfigParser
+from pathlib import Path
+from queue import Queue
+from subprocess import Popen, PIPE
+from threading  import Thread, Lock
 from urllib.parse import urlparse
-import glob
-import fcntl
+import xmlrpc.client as xmlrpclib
 
 
-HOME = Path.home()
+PROGNAME = "afterpkg"
 
+# These can only be local
+SCRIPTS_DIR = Path(os.path.expanduser(f"~/.{PROGNAME}/scripts"))
+PYPI_PICKLE = Path(os.path.expanduser(f"~/.{PROGNAME}/pypi.pickle"))
+
+BOT_STATUS = Path(os.path.expanduser(f"~/.{PROGNAME}"))
+
+
+# Can be local or remote
 INSTALLED_PACKAGES_DIR = Path("/var/lib/pkgtools/packages")
-
-
-AFTERPKG_DIR = HOME / ".afterpkg"
-AFTERPKG_DIR.mkdir(parents=True, exist_ok=True)
-
-# Directory structure mimicking the SBo one
-DOWNLOAD_PKG_DIR = AFTERPKG_DIR / "downloads"
-DOWNLOAD_PKG_DIR.mkdir(parents=True, exist_ok=True)
-
-SCRIPTS_DIR = AFTERPKG_DIR / "scripts"
-BOT_WORKING_DIRS = AFTERPKG_DIR / "bots"
-PYPI_PICKLE = AFTERPKG_DIR / "pypi.pickle"
-
-LOCKFILE = AFTERPKG_DIR / "lock.lck"
+BOT_WORKING_DIRS = Path(f"~/.{PROGNAME}/bots")
+DOWNLOAD_PKG_DIR = Path(f"~/.{PROGNAME}/downloads")
 
 # Use for both the installpkg and pip install steps.
 INSTALLER_LOCK = Lock()
 DOWNLOAD_LOCK = Lock()
 
 
+# Remote host to talk to, if requested on the command-line
+g_ssh_host = None
+
+
+def get_remote_command(command):
+    """
+        Return the command to be executed, taking into account g_ssh_host setting.
+    """
+    if g_ssh_host:
+        command = f'ssh {g_ssh_host} "{command}"'
+    return command
+
+
+def put_file_to_remote(src, dest):
+    """
+        Return the command to copy directory of files locally or remotely depending on g_ssh_host setting
+    """
+    dest = str(dest)
+    if dest.startswith("~/"):
+        dest = dest[2:]
+    if g_ssh_host:
+        command = f"scp -r {src} {g_ssh_host}:{dest}"
+    else:
+        command = f"cp -r {src} {dest}"
+    return command
+
+
+def remote_popen(command):
+    """
+        Run a command and fetch the output, don't care about return code.  Use this only when you don't care about the
+        result, e.g. md5sum will give either the correct md5 or something else, we don't care what.
+    """
+    command = get_remote_command(command)
+    p = Popen(command, stdout=PIPE, stderr=PIPE, shell=True)
+    sout, _ = p.communicate("")
+    return sout.decode("utf-8")
+
+
 def find_scripts_location():
-    """Is this script running from git"""
+    """
+        If the script location is
+    """
     # If this is running from a git repo, scripts are in subdirs.
     p = Popen("git rev-parse --git-dir", stdout=PIPE, stderr=PIPE, shell=True, cwd=sys.path[0])
     _, _ = p.communicate("")
@@ -74,10 +107,11 @@ def find_scripts_location():
         return Path(sys.path[0]) / "scripts"
     else:
         # Otherwise look for scripts in ~/.afterpkg/scripts
-        return AFTERPKG_DIR / "scripts"
+        return SCRIPTS_DIR
 
 
 class NoOpLock:
+    """A do-nothing context manager"""
     def __enter__(self):
         pass
     def __exit__(self, _type, value, traceback):
@@ -101,36 +135,25 @@ def list_all_pypi_packages():
         return packages
 
 
-def list_local_pip_packages(version):
-    """
-        Run pip to determine locally installed packages.
-        Empty version string == py2, '3' == py3
-    """
-    command = "pip%s list --format json" % version
-    p = Popen(command, stdout=PIPE, stderr=PIPE, shell=True)
-    sout, err = p.communicate("")
-    out = set()
-    for d in json.loads(sout):
-        name = d["name"]
-        if name.startswith("-"):
-            name = name[1:]
-        out.add(name)
-    return out
-
-
 def get_installed_packages():
+    """Figure out the list of installed packages, including Slackware core ones.  Return as a set."""
     rex = re.compile("^(.*)-([^-]*)-([^-]*)-([^-]*)$")
-
     out = set()
-    for path in INSTALLED_PACKAGES_DIR.iterdir():
-        m = rex.match(path.name)
+    for line in remote_popen("ls %s" % INSTALLED_PACKAGES_DIR).split("\n"):
+        m = rex.match(line.strip())
         if m:
             out.add(m.group(1))
     return out
 
 
+g_info_cache = {}
+
+
 def read_info(path):
     """Read a fields of .info file"""
+    if path in g_info_cache:
+        return g_info_cache[path]
+
     cfg = ConfigParser(interpolation=None)
     cfg.optionxform = str
     with path.open("r") as fp:
@@ -153,6 +176,7 @@ def read_info(path):
                 else:
                     value = value.split(" ")
             result[option] = value
+        g_info_cache[path] = result
         return result
 
 
@@ -191,7 +215,7 @@ class DependencyManager:
         """path is the root of slackbuilds"""
         if not path.exists():
             print("No slackbuilds directory found at %s." % path)
-            os.system("git -C %s clone https://github.com/Ponce/slackbuilds.git" % AFTERPKG_DIR)
+            os.system(f"git -C ~/.{PROGNAME} ~/ clone https://github.com/Ponce/slackbuilds.git")
 
         self.ignore = {"%README%", ""}
         self.package_dirs = {}
@@ -206,13 +230,28 @@ class DependencyManager:
                     self.pySBo_all.add(name)
 
         self.pypi_all = list_all_pypi_packages()
-        self.pypi_local_py2 = list_local_pip_packages("")
-        self.pypi_local_py3 = list_local_pip_packages("3")
+        self.pypi_local_py2 = self.list_local_pip_packages("")
+        self.pypi_local_py3 = self.list_local_pip_packages("3")
         self.slack_pkg_local = get_installed_packages()
         self.py_rex = re.compile("^(python3?-)(.*)$")
         self.pip_rex = re.compile("^python(3?)-(.*)$")
         self.novirtual = novirtual
 
+
+    def list_local_pip_packages(self, version):
+        """
+            Run pip to determine locally installed packages.
+            Empty version string == py2, '3' == py3
+        """
+        command = f"pip{version} list --format json"
+        sout = remote_popen(command)
+        out = set()
+        for d in json.loads(sout):
+            name = d["name"]
+            if name.startswith("-"):
+                name = name[1:]
+            out.add(name)
+        return out
 
     def is_python_package(self, name):
         """
@@ -391,7 +430,7 @@ class ScriptManager:
             return self.requires[package]
 
 
-def output_thread(fp, console_q, quit_q, package, bot_index):
+def output_thread(fp, console_q, package, bot_index):
     """
         read from fp, tag the data and put it on the console queue.  package and bot_index are just passed on
         after eof, signal we're done on quit_q.
@@ -402,71 +441,92 @@ def output_thread(fp, console_q, quit_q, package, bot_index):
             break
         console_q.put((text, package, bot_index))
 
-    # When there's no more data (empty-string read) signal the bot that we quitting
-    quit_q.put(get_ident())
-
 
 def get_built_package_location(name, info_dict):
-    prefix = f"/tmp/{name}-" + info_dict["VERSION"] + "-*"
-    paths = glob.glob(prefix)
-    if len(paths) == 1:
-        return paths[0]
+    command = f"ls /tmp/{name}-" + info_dict["VERSION"] + "-*"
+    out = []
+    for path in remote_popen(command).split("\n"):
+        if not path:
+            continue
+        out.append(path)
+    if len(out) == 1:
+        return out[0]
     raise ValueError("Unable to find built package location, build may have failed.")
 
 
 class Runner:
-    def __init__(self, working_dir, console, package, bot_index, donothing):
-        self.working_dir = working_dir
+    """
+        Run programs from the bot, doing something sensible with the output.
+    """
+    def __init__(self, console, bot_index, donothing):
         self.console = console
-        self.package = package
+        self.package = "<BOT>"
         self.bot_index = bot_index
         self.donothing = donothing
 
-    def exec(self, command):
-        if self.donothing:
-            self.run('echo "%s"' % command)
-        else:
-            self.run(command)
+    def set_package(self, package):
+        self.package = package
 
-    def run(self, command):
+    def echo(self, text):
+        self.console.put(((text+"\n").encode("utf-8"), self.package, self.bot_index))
+
+    def exec(self, command, stdin_text=None):
+
+        command = get_remote_command(command)
+        if self.donothing:
+            if stdin_text:
+                self.echo(f'cat <script> | {command}')
+            else:
+                self.echo(f'{command}')
+        else:
+            self.run(command, stdin_text)
+
+    def run(self, command, stdin_text=None):
         """"Execute a command from a bot thread"""
 
-        open_handles = {}
-        p = Popen(command, stdout=PIPE, stderr=PIPE, shell=True, bufsize=0, cwd=str(self.working_dir))
+        if stdin_text:
+            stdin_pipe = PIPE
+        else:
+            stdin_pipe = None
 
-        console_quit_q = Queue()
+        p = Popen(command, stdout=PIPE, stderr=PIPE, stdin=stdin_pipe, shell=True, bufsize=0)
 
         # These threads only exist as long as the package build
-        sout = Thread(target=output_thread, args=(p.stdout, self.console, console_quit_q, self.package, self.bot_index))
+        sout = Thread(target=output_thread, args=(p.stdout, self.console, self.package, self.bot_index))
         sout.daemon = True
         sout.start()
-        open_handles[sout.ident] = None
 
-        serr = Thread(target=output_thread, args=(p.stderr, self.console, console_quit_q, self.package, self.bot_index))
+        serr = Thread(target=output_thread, args=(p.stderr, self.console, self.package, self.bot_index))
         serr.daemon = True
         serr.start()
-        open_handles[serr.ident] = None
 
-        # This loop will exit when the package is built.
-        while open_handles:
-            try:
-                output_quit = console_quit_q.get(True, 0.5)
-                del open_handles[output_quit]
-            except Empty:
-                pass
+        if stdin_text:
+            p.stdin.write(stdin_text)
+            p.stdin.close()
+
+        sout.join()
+        serr.join()
+        p.wait()
+        if p.returncode != 0:
+            raise OSError("Error executing %r" % command)
+
+
+    def copytree(self, src_path, dest_path):
+        command = put_file_to_remote(src_path, dest_path)
+        if self.donothing:
+            self.echo(command)
+        else:
+            self.run(command)
 
 
 def md5_sum(path):
     """Get the checksum of the passed path or None if non-existent"""
-    if not path.exists():
-        return None
-    hash_obj = hashlib.md5()
-    with path.open("rb") as fp:
-        block = True
-        while block:
-            block = fp.read(0x100000)
-            hash_obj.update(block)
-    return hash_obj.hexdigest().lower()
+    rex = re.compile(r"^([a-f0-9]{32})\s+(\S+)$")
+    for line in remote_popen(f"md5sum {path}").split("\n"):
+        m =  rex.match(line.strip())
+        if m:
+            return m.group(1)
+    return None
 
 
 def required_source_files(info_dict):
@@ -481,7 +541,6 @@ def required_source_files(info_dict):
 
 
 def download_file_commands(info_dict, download_dir):
-    download_dir.mkdir(parents=True, exist_ok=True)
     commands = []
     for url, fname, checksum in required_source_files(info_dict):
         download_location = download_dir / fname
@@ -506,12 +565,13 @@ class JobContext:
 
 def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
     """
-        build and install packages named on job_q, push name to done_q when done.  console and bot_index are passed on
-        Signal it's over with quit_q
+        download, build and install packages on job_q, push name to done_q when done.
     """
+    runner = Runner(console, bot_index, args.donothing)
+
     bot_working_dir = BOT_WORKING_DIRS / ("%02d" % bot_index)
-    if bot_working_dir.exists():
-        shutil.rmtree(bot_working_dir)
+    runner.exec("rm -rf %s" % bot_working_dir)
+    runner.exec("mkdir -p %s" % bot_working_dir)
 
     job_count = 0
     download_lock = DOWNLOAD_LOCK if args.getinparallel else NoOpLock()
@@ -523,13 +583,13 @@ def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
             return
 
         with JobContext(done_q, package):
+            runner.set_package(package)
             job_count += 1
 
             working_dir = bot_working_dir / ("%03x_%s" % (job_count, package))
 
             src_path = dep_manager.get_source_location(package)
             info = src_path / (package + ".info")
-            runner = Runner(working_dir, console, package, bot_index, args.donothing)
 
             if args.pipinstall:
                 # Have a go at installing with pip.  If we can't still try to let SBo do it
@@ -540,19 +600,15 @@ def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
                         runner.exec('%s install %s' % (pip_ver, pypi))
                     continue
 
-            if not args.donothing:
-                if working_dir.exists():
-                    shutil.rmtree(working_dir)
-                # Working dir
-                shutil.copytree(src_path, working_dir)
-            else:
-                working_dir.mkdir(parents=True, exist_ok=True)
+            runner.exec("rm -rf %s" % working_dir)
+            runner.copytree(src_path, working_dir)
 
             # Download step
             info_dict = read_info(info)
             category = dep_manager.get_source_location(package).parent.name
             download_dir = DOWNLOAD_PKG_DIR / category / package
             for command, location in download_file_commands(info_dict, download_dir):
+                runner.exec("mkdir -p %s" % download_dir)
                 with download_lock:
                     runner.exec(command)
                     
@@ -562,47 +618,40 @@ def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
             if args.onlydownload:
                 continue
 
-            handle, temp_wrapper = tempfile.mkstemp(suffix=".sh", dir=working_dir, text=False)
-            os.close(handle)
+            temp_wrapper = working_dir / "afterpkg-build.sh"
 
             total_script = b'#!/bin/sh\n'
             before = scripts.get_before(package)
             if before:
-                if args.donothing:
-                    runner.exec('Running *before* script for %s' % package)
+                runner.echo('Adding *before* script for %s' % package)
                 total_script += before.open("rb").read()
 
             for dep_package in dep_manager.resolve_dependencies([package], False):
+                if  dep_package == package:
+                    continue
                 requires = scripts.get_requires(dep_package)
                 if requires:
-                    if args.donothing:
-                        runner.exec('Running *requires* script for %s' % dep_package)
+                    runner.echo('Adding *requires* script for %s' % dep_package)
                     total_script += requires.open("rb").read()
 
-            build_script = working_dir / (package + ".SlackBuild")
-            if args.donothing:
-                runner.exec('Running *build* script %s' % (package + ".SlackBuild"))
-            else:
-                total_script += build_script.open("rb").read()
+            runner.echo('Adding *build* script %s' % (package + ".SlackBuild"))
 
+            build_script = src_path / (package + ".SlackBuild")
+            total_script += build_script.open("rb").read()
 
             after = scripts.get_after(package)
             if after:
-                if args.donothing:
-                    runner.exec('Running *after* script for %s' % package)
+                runner.echo('Adding *after* script for %s' % package)
                 total_script += after.open("rb").read()
 
-            if not args.donothing:
-                open(temp_wrapper, "wb").write(total_script)
-                os.chmod(temp_wrapper, 0o755)
-                runner.exec(temp_wrapper)
+            runner.exec(f"dd of={temp_wrapper}", total_script)
+            runner.exec(f"cd {working_dir} && sh {temp_wrapper}")
 
             with INSTALLER_LOCK:
                 built_location = "/tmp/%s-%s-...tgz" % (package, info_dict["VERSION"])
                 if not args.donothing:
                     built_location = get_built_package_location(package, info_dict)
                 runner.exec("installpkg %s" % str(built_location))
-
 
 
 COLOURS = {
@@ -653,16 +702,16 @@ def bot_controller_thread(job_q, done_q, console_q, dep_manager, scripts, args):
 
 
 def write_bot_status(ident, value):
-    bot_status = BOT_WORKING_DIRS / f"{ident}.txt"
+    bot_status = BOT_STATUS / f"{ident}.txt"
     bot_data = "\n".join(value) + "\n"
     bot_status.open("wb").write(bot_data.encode("utf-8"))
 
 
 def start_build_engine(dep_manager, packages, scripts, args):
     """packages is the list of packages to build"""
-    
-    BOT_WORKING_DIRS.mkdir(parents=True, exist_ok=True)
-        
+
+    remote_popen("rm -rf %s" % BOT_WORKING_DIRS)
+
     job_q = Queue()
     done_q = Queue()
     console_q = Queue()
@@ -672,10 +721,6 @@ def start_build_engine(dep_manager, packages, scripts, args):
     console_controller.daemon = True
     console_controller.start()
 
-    for path in BOT_WORKING_DIRS.iterdir():
-        if path.is_dir():
-            shutil.rmtree(path)
-
     # This thread controls the bots.
     bot_controller = Thread(target=bot_controller_thread, args=(job_q, done_q, console_q, dep_manager, scripts, args))
     bot_controller.daemon = True
@@ -683,6 +728,8 @@ def start_build_engine(dep_manager, packages, scripts, args):
 
     pending = copy.copy(packages)
     built = set()
+
+    has_error = False
 
     while pending:
         # Figure out the set of packages that we can queue.  These will be the ones with no (un-built) dependencies.
@@ -701,6 +748,7 @@ def start_build_engine(dep_manager, packages, scripts, args):
         done = done_q.get(True)
         if done is None:
             print("There was an error, shutting down...")
+            has_error = True
             break
 
         built.add(done)
@@ -709,6 +757,10 @@ def start_build_engine(dep_manager, packages, scripts, args):
     # Signal the bots to drop out of their job processing loops.
     for _ in range(int(args.numthreads)):
         job_q.put(None)
+
+    if has_error:
+        time.sleep(0.5)  # Hopefully enough time for the exception to get printed.
+        sys.exit(1)
 
     # The controller will quit when the bots quit
     bot_controller.join()
@@ -720,34 +772,49 @@ def start_build_engine(dep_manager, packages, scripts, args):
     console_controller.join()
 
 
+def read_packages_from_stdin(slackbuilds):
+    if len(slackbuilds) != 1:
+        print("Only a single dash '-' allowed for reading packages on stdin", file=sys.stderr)
+        sys.exit(1)
+    out = []
+    for line in sys.stdin.readlines():
+        text = line.partition("#")[0].strip()
+        if not text:
+            continue
+        out.append(text)
+    return out
+
+
 def build_packages(args):
+    global g_ssh_host
+    g_ssh_host = args.targethost
+
+    if "-" in args.packages:
+        packages = read_packages_from_stdin(args.packages)
+    else:
+        packages = args.packages
+
+
     dep_manager = DependencyManager(Path(args.slackbuilds), args.novirtual)
     scripts = ScriptManager(find_scripts_location(), args)
 
-    resolved = dep_manager.resolve_dependencies(args.packages, True)
+    resolved = dep_manager.resolve_dependencies(packages, True)
 
     if args.queue:
         for package in resolved:
             print(package)
     else:
-        with LOCKFILE.open("wb") as fp:
-            try:
-                if not args.donothing:
-                    fcntl.flock(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                print("afterpkg is already running, only a single instance is allowed.")
-                sys.exit(1)
-            start_build_engine(dep_manager, resolved, scripts, args)
+        start_build_engine(dep_manager, resolved, scripts, args)
 
 
 def main():
-    parser = argparse.ArgumentParser(prog='afterpkg',
-            description="Download, build and install packages from SBo-current. Afterpkg expects a full install of -current and "
-                        "the SBo repo to be found at ~/.afterpkg/slackbuilds/, if missing the ponce repo will be cloned there.  "
+    parser = argparse.ArgumentParser(prog=f'{PROGNAME}',
+            description=f"Download, build and install packages from SBo-current. {PROGNAME} expects a full install of -current and "
+                        f"the SBo repo to be found at ~/.{PROGNAME}/slackbuilds/, if missing the ponce repo will be cloned there.  "
                         "By default most functionality is enabled, the options described below mostly DISABLE things.")
 
-    parser.add_argument("-s", "--slackbuilds", default=os.path.expanduser("~/.afterpkg/slackbuilds"),
-                        help="Specify the slackbuild directory.  The default is ~/.afterpkg/slackbuilds.  This directory will be "
+    parser.add_argument("-s", "--slackbuilds", default=os.path.expanduser(f"~/.{PROGNAME}/slackbuilds"),
+                        help=f"Specify the slackbuild directory.  The default is ~/.{PROGNAME}/slackbuilds.  This directory will be "
                              "cloned from https://github.com/Ponce/slackbuilds.git if not present.  This will happen regardless "
                              "of the -d flag (it's not counted as doing anything).  If you want a different repository make sure "
                              "this exists before running.")
@@ -782,11 +849,17 @@ def main():
     parser.add_argument("-g", "--getinparallel", default=False, action="store_true",
                         help="Normally downloads will be one-by-one.  This will run them in parallel (up to --numthreads)")
     parser.add_argument("-q", "--queue", default=False, action="store_true",
-                        help="Just print the queue of builds, similar to what sqg would generate. You can use afterpkg to only "
+                        help=f"Just print the queue of builds, similar to what sqg would generate. You can use {PROGNAME} to only "
                         "compute dependencies, generate an sbopkg queue and then run the builds with sbopkg if you prefer.")
+    parser.add_argument("-t", "--targethost", default=None, metavar='HOST',
+                        help="Specify the remote host to run build commands on. This could be root@host or something defined "
+                             "in your ssh config.  You should employ ssh-copy-id or otherwise update ~/.ssh/authorized_hosts"
+                             f"on the host to avoid password prompts as {PROGNAME} will not prompt you and just fail without this. ")
 
     parser.add_argument("packages", default=False, nargs="+",
-                        help="Package(s) to build")
+                        help="Package(s) to build.  If dash '-' is specified, reads package list from stdin, one-per-line"
+                             "Hash characters '#' will be considered comments and those lines (or ends of lines) will be ignored.")
+
     args = parser.parse_args()
     build_packages(args)
 
