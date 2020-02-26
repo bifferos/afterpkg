@@ -21,7 +21,7 @@
      ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-    buildgen
+    sbgen
 
     Generate a Slackware build to install a given Python package using pip.
     Note this doesn't generate a .info file but that can easily be added, it's
