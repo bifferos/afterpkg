@@ -28,12 +28,12 @@
     not strictly needed, you still need to obtain your 'source' by running
     something like:
 
-    $ pip3 download --no-deps --platform slackware <pypi name>
+    $ pip download  <pypi name>
+    $ pip3 download  <pypi name>
 
-    Of course slackware won't match any known platform so it will fallback to downloading
-    the source (sdist).  This will give you source tarball in cwd.
 """
 
+import os
 import argparse
 import textwrap
 from pathlib import Path
@@ -44,8 +44,10 @@ PROGNAME = "sbgen"
 
 
 do_install_template = """
-pip3 install --no-deps --no-index --find-links /opt/afterpkg-python %(package)s
+pip install --no-index --find-links /opt/afterpkg-python %(package)s
+pip3 install --no-index --find-links /opt/afterpkg-python %(package)s
 """
+
 
 build_template = """#!/bin/sh
 
@@ -76,7 +78,7 @@ rm -rf $PKG
 mkdir -p $TMP $PKG $OUTPUT
 cd $TMP
 rm -rf $PRGNAM-$VERSION
-tar xvf $CWD/$PRGNAM-$VERSION.tar.gz
+mkdir $PRGNAM-$VERSION
 cd $PRGNAM-$VERSION
 chown -R root:root .
 find -L . \
@@ -90,16 +92,16 @@ find $PKG -print0 | xargs -0 file | grep -e "executable" -e "shared object" | gr
   | cut -f 1 -d : | xargs strip --strip-unneeded 2> /dev/null || true
 
 mkdir -p $PKG/usr/doc/$PRGNAM-$VERSION
-cp -a \
-   CHANGES LICENSE README  \
-  $PKG/usr/doc/$PRGNAM-$VERSION
+cp -a $CWD/README $PKG/usr/doc/$PRGNAM-$VERSION
 cat $CWD/$PRGNAM.SlackBuild > $PKG/usr/doc/$PRGNAM-$VERSION/$PRGNAM.SlackBuild
 
 mkdir -p $PKG/install
 mkdir -p $PKG/opt/afterpkg-python
 cat $CWD/slack-desc > $PKG/install/slack-desc
 cat $CWD/doinst.sh > $PKG/install/doinst.sh
-cp $CWD/%(source)s > $PKG/opt/afterpkg-python/%(source)s
+
+cp $CWD/*.whl $PKG/opt/afterpkg-python/
+cp $CWD/*.gz $PKG/opt/afterpkg-python/
 
 cd $PKG
 /sbin/makepkg -l y -c n $OUTPUT/$PRGNAM-$VERSION-$ARCH-$BUILD$TAG.${PKGTYPE:-tgz}
@@ -131,11 +133,30 @@ desc_template = """# HOW TO EDIT THIS FILE:
 %(package)s: %(description9)s
 """
 
+
+info_template = """PRGNAM="%(package)s"
+VERSION="%(version)s"
+HOMEPAGE="%(home_page)s"
+DOWNLOAD="%(url)s"
+MD5SUM="%(md5_digest)s"
+DOWNLOAD_x86_64=""
+MD5SUM_x86_64=""
+REQUIRES=""
+MAINTAINER="Bifferos"
+EMAIL="bifferos@gmail.com"
+"""
+
 DESC_LINE_WIDTH = 70
 
 
 def get_info(package):
+    """
+        Download and cache the entire list of packages from pypi.  This takes a couple of seconds but it's cached
+        to be considerate to the server.  You'll need to periodically delete the downloaded file yourself.
+    """
+    #print("Downloading package list from pypi")
     client = xmlrpclib.ServerProxy('https://pypi.python.org/pypi')
+    # get a list of package names
     release = client.package_releases(package)[0]
 
     data = client.release_data(package, release)
@@ -145,13 +166,19 @@ def get_info(package):
         "summary": data["summary"],
         "package": package,
         "pad": " "*len(package),
-        "version": release
+        "version": release,
+        "home_page": data["home_page"]
     }
+
+    for item in data["requires_dist"]:
+        print(item)
 
     urls = client.release_urls(package, release)
     for url in urls:
         if url["packagetype"] == 'sdist':
             fields["source"] = url["filename"]
+            fields["url"] = url["url"]
+            fields["md5_digest"] = url["md5_digest"]
 
     readme = data["summary"] + "\n\n"
 
@@ -172,7 +199,6 @@ def get_info(package):
 
     readme += wrapped + "\n"
 
-    # Discard anything after the first 9 lines.
     max_desc = wrapped.split("\n")[:9]
     with_tail = "\n".join(max_desc) + "\n"
 
@@ -202,12 +228,16 @@ def render_template(name, template, fields):
     Path(name).open("wb").write((template % fields).encode("utf-8"))
 
 
-def generage_build(package):
+def generate_build(package):
+    os.system("pip download %s" % package)
+    os.system("pip3 download %s" % package)
+
     fields = get_info(package)
     render_template("doinst.sh", do_install_template, fields)
     render_template("README", readme_template, fields)
     render_template("slack-desc", desc_template, fields)
     render_template(package + ".SlackBuild", build_template, fields)
+    render_template(package + ".info", info_template, fields)
 
 
 def main():
@@ -217,7 +247,7 @@ def main():
                         help="pypi name to generate wrapper for")
 
     args = parser.parse_args()
-    generage_build(args.package)
+    generate_build(args.package)
 
 
 if __name__ == "__main__":
