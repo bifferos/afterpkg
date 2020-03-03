@@ -71,6 +71,8 @@ def get_remote_command(command):
     """
     if g_ssh_host:
         command = f'ssh {g_ssh_host} "{command}"'
+    else:
+        command = command.replace("~", LOCAL_HOME_DIR)
     return command
 
 
@@ -79,9 +81,9 @@ def put_file_to_remote(src, dest):
         Return the command to copy directory of files locally or remotely depending on g_ssh_host setting
     """
     dest = str(dest)
-    if dest.startswith("~/"):
-        dest = dest[2:]
     if g_ssh_host:
+        if dest.startswith("~/"):
+            dest = dest[2:]
         command = f"scp -r {src} {g_ssh_host}:{dest}"
     else:
         command = f"cp -r {src} {dest}"
