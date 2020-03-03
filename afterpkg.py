@@ -72,7 +72,7 @@ def get_remote_command(command):
     if g_ssh_host:
         command = f'ssh {g_ssh_host} "{command}"'
     else:
-        command = command.replace("~", LOCAL_HOME_DIR)
+        command = command.replace("~", str(LOCAL_HOME_DIR))
     return command
 
 
