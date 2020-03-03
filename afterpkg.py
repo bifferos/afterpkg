@@ -41,11 +41,14 @@ import xmlrpc.client as xmlrpclib
 
 PROGNAME = "afterpkg"
 
+LOCAL_HOME_DIR = Path.home()
+LOCAL_AFTERPKG_DIR = LOCAL_HOME_DIR / ".afterpkg"
+
 # These can only be local
 SCRIPTS_DIR = Path(os.path.expanduser(f"~/.{PROGNAME}/scripts"))
 PYPI_PICKLE = Path(os.path.expanduser(f"~/.{PROGNAME}/pypi.pickle"))
 
-BOT_STATUS = Path(os.path.expanduser(f"~/.{PROGNAME}"))
+BOT_STATUS_DIR = Path(os.path.expanduser(f"~/.{PROGNAME}"))
 
 
 # Can be local or remote
@@ -213,9 +216,11 @@ sbo_to_pypi_specials = [
 class DependencyManager:
     def __init__(self, path, novirtual):
         """path is the root of slackbuilds"""
+
         if not path.exists():
             print("No slackbuilds directory found at %s." % path)
-            os.system(f"git -C ~/.{PROGNAME} ~/ clone https://github.com/Ponce/slackbuilds.git")
+            cmnd = f"git -C ~/.{PROGNAME} clone https://github.com/Ponce/slackbuilds.git"
+            os.system(cmnd)
 
         self.ignore = {"%README%", ""}
         self.package_dirs = {}
@@ -702,7 +707,7 @@ def bot_controller_thread(job_q, done_q, console_q, dep_manager, scripts, args):
 
 
 def write_bot_status(ident, value):
-    bot_status = BOT_STATUS / f"{ident}.txt"
+    bot_status = BOT_STATUS_DIR / f"{ident}.txt"
     bot_data = "\n".join(value) + "\n"
     bot_status.open("wb").write(bot_data.encode("utf-8"))
 
@@ -786,6 +791,9 @@ def read_packages_from_stdin(slackbuilds):
 
 
 def build_packages(args):
+
+    LOCAL_AFTERPKG_DIR.mkdir(exist_ok=True, parents=True)
+
     global g_ssh_host
     g_ssh_host = args.targethost
 
