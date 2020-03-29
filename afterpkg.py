@@ -34,7 +34,7 @@ from configparser import ConfigParser
 from pathlib import Path
 from queue import Queue
 from subprocess import Popen, PIPE
-from threading  import Thread, Lock
+from threading import Thread, Lock
 from urllib.parse import urlparse
 import xmlrpc.client as xmlrpclib
 
@@ -97,7 +97,7 @@ def remote_popen(command):
     """
     command = get_remote_command(command)
     p = Popen(command, stdout=PIPE, stderr=PIPE, shell=True)
-    sout, _ = p.communicate("")
+    sout, _ = p.communicate(b'')
     return sout.decode("utf-8")
 
 
@@ -107,7 +107,7 @@ def find_scripts_location():
     """
     # If this is running from a git repo, scripts are in subdirs.
     p = Popen("git rev-parse --git-dir", stdout=PIPE, stderr=PIPE, shell=True, cwd=sys.path[0])
-    _, _ = p.communicate("")
+    _, _ = p.communicate(b"")
     if p.returncode == 0:
         return Path(sys.path[0]) / "scripts"
     else:
@@ -119,6 +119,7 @@ class NoOpLock:
     """A do-nothing context manager"""
     def __enter__(self):
         pass
+
     def __exit__(self, _type, value, traceback):
         pass
 
@@ -179,7 +180,7 @@ def read_info(path):
                 if value == '':
                     value = []
                 else:
-                    value = value.split(" ")
+                    value = value.split()
             result[option] = value
         g_info_cache[path] = result
         return result
@@ -221,8 +222,11 @@ class DependencyManager:
 
         if not path.exists():
             print("No slackbuilds directory found at %s." % path)
-            cmnd = f"git -C ~/.{PROGNAME} clone https://github.com/Ponce/slackbuilds.git"
+            cmnd = f"wget -O ~/.{PROGNAME}/slackbuilds.zip https://github.com/Ponce/slackbuilds/archive/current.zip"
             os.system(cmnd)
+            cmnd = f"unzip -d ~/.{PROGNAME} ~/.{PROGNAME}/slackbuilds.zip"
+            os.system(cmnd)
+            os.system(f"mv ~/.{PROGNAME}/slackbuilds-current ~/.{PROGNAME}/slackbuilds")
 
         self.ignore = {"%README%", ""}
         self.package_dirs = {}
@@ -244,8 +248,8 @@ class DependencyManager:
         self.pip_rex = re.compile("^python(3?)-(.*)$")
         self.novirtual = novirtual
 
-
-    def list_local_pip_packages(self, version):
+    @staticmethod
+    def list_local_pip_packages(version):
         """
             Run pip to determine locally installed packages.
             Empty version string == py2, '3' == py3
@@ -262,7 +266,7 @@ class DependencyManager:
 
     def is_python_package(self, name):
         """
-            TODO:  Figure out the combined python2-3 packages and what to do with them.
+            Needs to figure out the combined python2-3 packages and what to do with them.
             Also this function is way too crude right now.
         """
         # Is it in the python category?
@@ -282,7 +286,6 @@ class DependencyManager:
         # Then I guess it's not a python package.
         return False
 
-
     def get_pip_version(self, name):
         """
             Figure out the pip version needed to install said package.  Basically use pip3 for anything python3-
@@ -293,7 +296,6 @@ class DependencyManager:
             return "pip"
         return "pip" + m.group(1)
 
-
     def sbo_to_pypi(self, name):
         """
             Convert an SBo name to a pip name.  We assume is_python_package() has already been called to check.
@@ -301,7 +303,7 @@ class DependencyManager:
             on pypi.  Of course that doesn't mean it's actually the same package, but it probably will be for anything
             I need!!!
         """
-        # Remove any python[3]- prefix and see if the remaining string matches a pypi package.  Try py3 first, of course.
+        # Remove any python[3]- prefix and see if the remaining string matches a pypi package.  Try py3 first.
         m = self.py_rex.match(name)
         if m:
             to_try = name.replace(m.group(1), "", 1)
@@ -328,7 +330,6 @@ class DependencyManager:
         # As a last resort we'll assume we have to actually build the thing the conventional way.
         return None
 
-
     def has_local_package(self, sbo_name):
         """
             Check if the given package name is installed, either via pip or SBo
@@ -347,7 +348,6 @@ class DependencyManager:
                 if pip_pkg in self.pypi_local_py2:
                     return True
         return False
-
 
     def lookup_deps(self, pkg, remove_local=True):
         """
@@ -370,7 +370,6 @@ class DependencyManager:
             deps.append(dep)
         return deps
 
-
     def _resolve_dependencies(self, package_names, resolved, remove_local):
         """
             Ends up with a list of all packages that need to be built in resolved.
@@ -389,17 +388,14 @@ class DependencyManager:
                 self._resolve_dependencies(deps, resolved, remove_local)
             resolved.append(package_name)
 
-
     def resolve_dependencies(self, package_names, remove_local=True):
         resolved = []
         self._resolve_dependencies(package_names, resolved, remove_local)
         return resolved
 
-
     def get_source_location(self, name):
         """Get the path to the SBo SlackBuild Directory"""
         return self.package_dirs[name]
-
 
     def is_sbo_pkg(self, pkg):
         """Is the package an SBo one?"""
@@ -517,7 +513,6 @@ class Runner:
         if p.returncode != 0:
             raise OSError("Error executing %r" % command)
 
-
     def copytree(self, src_path, dest_path):
         command = put_file_to_remote(src_path, dest_path)
         if self.donothing:
@@ -530,7 +525,7 @@ def md5_sum(path):
     """Get the checksum of the passed path or None if non-existent"""
     rex = re.compile(r"^([a-f0-9]{32})\s+(\S+)$")
     for line in remote_popen(f"md5sum {path}").split("\n"):
-        m =  rex.match(line.strip())
+        m = rex.match(line.strip())
         if m:
             return m.group(1)
     return None
@@ -561,8 +556,10 @@ class JobContext:
     def __init__(self, queue, package):
         self.queue = queue
         self.package = package
+
     def __enter__(self):
         pass
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type is None:
             self.queue.put(self.package)
@@ -634,7 +631,7 @@ def bot_thread(job_q, done_q, dep_manager, console, scripts, bot_index, args):
                 total_script += before.open("rb").read()
 
             for dep_package in dep_manager.resolve_dependencies([package], False):
-                if  dep_package == package:
+                if dep_package == package:
                     continue
                 requires = scripts.get_requires(dep_package)
                 if requires:
@@ -760,7 +757,6 @@ def start_build_engine(dep_manager, packages, scripts, args):
 
         built.add(done)
 
-
     # Signal the bots to drop out of their job processing loops.
     for _ in range(int(args.numthreads)):
         job_q.put(None)
@@ -804,7 +800,6 @@ def build_packages(args):
     else:
         packages = args.packages
 
-
     dep_manager = DependencyManager(Path(args.slackbuilds), args.novirtual)
     scripts = ScriptManager(find_scripts_location(), args)
 
@@ -819,56 +814,68 @@ def build_packages(args):
 
 def main():
     parser = argparse.ArgumentParser(prog=f'{PROGNAME}',
-            description=f"Download, build and install packages from SBo-current. {PROGNAME} expects a full install of -current and "
-                        f"the SBo repo to be found at ~/.{PROGNAME}/slackbuilds/, if missing the ponce repo will be cloned there.  "
-                        "By default most functionality is enabled, the options described below mostly DISABLE things.")
+                                     description=f"Download, build and install packages from SBo-current. {PROGNAME} "
+                                     "expects a full install of -current and the SBo repo to be found at "
+                                     f"~/.{PROGNAME}/slackbuilds/, if missing the ponce repo will be cloned there. "
+                                     "By default most functionality is enabled, the options described below mostly "
+                                     "DISABLE things.")
 
     parser.add_argument("-s", "--slackbuilds", default=os.path.expanduser(f"~/.{PROGNAME}/slackbuilds"),
-                        help=f"Specify the slackbuild directory.  The default is ~/.{PROGNAME}/slackbuilds.  This directory will be "
-                             "cloned from https://github.com/Ponce/slackbuilds.git if not present.  This will happen regardless "
-                             "of the -d flag (it's not counted as doing anything).  If you want a different repository make sure "
-                             "this exists before running.")
+                        help=f"Specify the slackbuild directory. The default is ~/.{PROGNAME}/slackbuilds. This "
+                        "directory will be cloned from https://github.com/Ponce/slackbuilds.git if not present.  This "
+                        "will happen regardless of the -d flag (it's not counted as doing anything).  If you want a "
+                        "different repository make sure this exists before running.")
     parser.add_argument("-d", "--donothing", default=False, action="store_true",
-                        help="Don't actually do anything, just list the steps that would be run.  Note that this doesn't disable "
-                             "threading:  The steps will be output on different threads, just as any real task would, which "
-                             "means they can be executed in random order. If you don't like this don't use -d with -n")
+                        help="Don't actually do anything, just list the steps that would be run.  Note that this "
+                        "doesn't disable threading:  The steps will be output on different threads, just as any real "
+                        "task would, which means they can be executed in random order. If you don't like this don't "
+                        "use -d with -n")
     parser.add_argument("-n", "--numthreads", default="1",
                         help="How many parallel operations to allow (default 1).  See also the -g option.")
     parser.add_argument("-c", "--nocolour", default=False, action="store_true",
-                        help="Parallel builds are normally coloured.  If you don't like vt100 escape codes in your output, use "
-                             "this option. You can still distinguish threads by the output line prefix")
+                        help="Parallel builds are normally coloured.  If you don't like vt100 escape codes in your "
+                             "output, use this option. You can still distinguish threads by the output line prefix")
     parser.add_argument("-o", "--onlydownload", default=False, action="store_true",
-                        help="This will only download the package sources and not build, so you can run the build offline")
+                        help="This will only download the package sources and not build, so you can run the build "
+                             "offline")
     parser.add_argument("-v", "--novirtual", default=False, action="store_true",
-                        help="Don't include any pip-installed Python packages in dependency computations (same as -2 and -3)")
+                        help="Don't include any pip-installed Python packages in dependency computations (same as -2 "
+                             "and -3)")
     parser.add_argument("-2", "--nopip2", default=False, action="store_true",
                         help="Don't include pip2-installed Python packages in dependency computations")
     parser.add_argument("-3", "--nopip3", default=False, action="store_true",
                         help="Don't include pip3-installed Python packages in dependency computations")
     parser.add_argument("-p", "--pipinstall", default=False, action="store_true",
                         help="By default Python SBo packages will be built and installed as required. This option "
-                             "will pip install them instead.  Note that this makes -o somewhat pointless, as it requires "
-                             "you to be online.  You can always pip install everything first, however.")
+                             "will pip install them instead.  Note that this makes -o somewhat pointless, as it "
+                             "requires you to be online.  You can always pip install everything first, however.")
     parser.add_argument("-b", "--before", default=False, action="store_true",
-                        help="Don't execute any 'before' scripts.  These scripts will get sourced before building the package.")
+                        help="Don't execute any 'before' scripts.  These scripts will get sourced before building the "
+                        "package.")
     parser.add_argument("-a", "--after", default=False, action="store_true",
-                        help="Don't execute any 'after' scripts.  These scripts will get sourced after building the package.")
+                        help="Don't execute any 'after' scripts.  These scripts will get sourced after building the "
+                        "package.")
     parser.add_argument("-r", "--requires", default=False, action="store_true",
-                        help="Don't execute any 'requires' scripts.  These scripts will get sourced before executing the builds of "
+                        help="Don't execute any 'requires' scripts.  These scripts will get sourced before executing "
+                        "the builds of "
                              "dependent packages.")
     parser.add_argument("-g", "--getinparallel", default=False, action="store_true",
-                        help="Normally downloads will be one-by-one.  This will run them in parallel (up to --numthreads)")
+                        help="Normally downloads will be one-by-one.  This will run them in parallel (up to "
+                        "--numthreads)")
     parser.add_argument("-q", "--queue", default=False, action="store_true",
-                        help=f"Just print the queue of builds, similar to what sqg would generate. You can use {PROGNAME} to only "
-                        "compute dependencies, generate an sbopkg queue and then run the builds with sbopkg if you prefer.")
+                        help=f"Just print the queue of builds, similar to what sqg would generate. You can use "
+                        f"{PROGNAME} to only compute dependencies, generate an sbopkg queue and then run the builds "
+                        "with sbopkg if you prefer.")
     parser.add_argument("-t", "--targethost", default=None, metavar='HOST',
-                        help="Specify the remote host to run build commands on. This could be root@host or something defined "
-                             "in your ssh config.  You should employ ssh-copy-id or otherwise update ~/.ssh/authorized_hosts"
-                             f"on the host to avoid password prompts as {PROGNAME} will not prompt you and just fail without this. ")
+                        help="Specify the remote host to run build commands on. This could be root@host or something "
+                        "defined in your ssh config.  You should employ ssh-copy-id or otherwise update "
+                        f"~/.ssh/authorized_hosts on the host to avoid password prompts as {PROGNAME} will not prompt "
+                        "you and just fail without this. ")
 
     parser.add_argument("packages", default=False, nargs="+",
-                        help="Package(s) to build.  If dash '-' is specified, reads package list from stdin, one-per-line"
-                             "Hash characters '#' will be considered comments and those lines (or ends of lines) will be ignored.")
+                        help="Package(s) to build.  If dash '-' is specified, reads package list from stdin, "
+                        "one-per-line Hash characters '#' will be considered comments and those lines (or ends of "
+                        "lines) will be ignored.")
 
     args = parser.parse_args()
     build_packages(args)
@@ -876,4 +883,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
