@@ -11,7 +11,7 @@ fi
 
 # Add all normal users to the docker group.
 USER_GID=$(cat /etc/group | grep "^users\:" | cut -d ":" -f 3)
-INTERACTIVE_USERS=$(cat /etc/passwd | cut -d ":" -f 1,4 | grep ":$USER_GID$" | cut -d : -f 1 | grep -v "^g
+INTERACTIVE_USERS=$(cat /etc/passwd | cut -d ":" -f 1,4 | grep ":$USER_GID$" | cut -d : -f 1 | grep -v "^games$")
 for user in $INTERACTIVE_USERS
 do
   DOCKER_USERS=$(cat /etc/group | grep "^docker:" | cut -d : -f 4)
