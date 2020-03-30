@@ -11,8 +11,8 @@ Group=messagebus:GID:81
 [HAL]
 User=haldaemon:UID:82:GID:82
 Group=haldaemon:GID:82
-Group=plugdev:GID:83
-Group=power:GID:84
+  plugdev:GID:83
+  power:GID:84
 
 [postfix]
 User=postfix:UID:200:GID:200
@@ -20,15 +20,15 @@ Group=postdrop:GID:201
 
 [dovecot]
 User=dovecot:UID:202:GID:202
-Group=dovecot:GID:202
-User=dovenull:UID:248:GID:248
+  dovenull:UID:248:GID:248
 Group=dovenull:GID:248
+  dovecot:GID:202
 
 [ircd]
 User=ircd:UID:203:GID:203
 Group=ircd:GID:203
 
-[Mailman]
+[mailman]
 User=mailman:UID:204:GID:204
 Group=mailman:GID:204
 
@@ -52,11 +52,11 @@ Group=lighttpd:GID:208
 User=postgres:UID:209:GID:209
 Group=postgres:GID:209
 
-[Clamav]
+[clamav]
 User=clamav:UID:210:GID:210
 Group=clamav:GID:210
 
-[Amavisd]
+[amavisd-new]
 User=amavis:UID:211:GID:211
 Group=amavis:GID:211
 
@@ -72,9 +72,9 @@ Group=nagios:GID:213
 User=avahi:UID:214:GID:214
 Group=avahi:GID:214
 
-[VirtualBox]
+[virtualbox]
 User=vboxadd:UID:215:GID:1
-User=vboxweb:UID:240:GID:215
+  vboxweb:UID:240:GID:215
 Group=vboxusers:GID:215
 
 [pulseaudio]
@@ -125,7 +125,7 @@ Group=haclient:GID:226
 User=thttpd:UID:227:GID:227
 Group=thttpd:GID:227
 
-[zabbix]
+[zabbix_server]
 User=zabbix:UID:228:GID:228
 Group=zabbix:GID:228
 
@@ -193,7 +193,7 @@ Group=---:GID:---
 [quagga]
 User=quagga:UID:245:GID:245
 Group=quagga:GID:245
-Group=quaggavt:GID:246
+  quaggavt:GID:246
 
 [mirrorbrain]
 User=mirrorbrain:UID:247:GID:247
@@ -215,7 +215,7 @@ Group=jenkins:GID:251
 User=nexus:UID:252:GID:252
 Group=nexus:GID:252
 
-[activemq]
+[apache-activemq]
 User=activemq:UID:253:GID:253
 Group=activemq:GID:253
 
@@ -241,9 +241,9 @@ Group=rplayd:GID:258
 
 [hiawatha]
 User=hiawatha:UID:259:GID:259
+  php-fcgi:UID:260:GID:260
 Group=hiawatha:GID:259
-User=php-fcgi:UID:260:GID:260
-Group=php-fcgi:GID:260
+  php-fcgi:GID:260
 
 [bumblebee]
 User=---:UID:---:GID:---
@@ -283,7 +283,7 @@ Group=freeswitch:GID:269
 
 [opensmtpd]
 User=smtpd:UID:270:GID:270
-User=smtpq:UID:271:GID:271 
+  smtpq:UID:271:GID:271
 
 [freeradius]
 User=radius:UID:272:GID:272
@@ -334,7 +334,7 @@ Group=icecream:GID:283
 User=spyke:UID:284:GID:284
 Group=spyke:GID:284
 
-[mongo]
+[mongodb]
 User=mongo:UID:285:GID:285
 Group=mongo:GID:285
 
@@ -346,7 +346,7 @@ Group=svxlink:GID:286
 User=svxlink:UID:287:GID:287
 Group=svxlink:GID:287
 
-[yubikey]
+[ykpers]
 Group=yubikey:GID:288
 
 [fcron]
@@ -359,9 +359,9 @@ Group=taskd:GID:290
 
 [x2goserver]
 User=x2gouser:UID:291:GID:291
+  x2goprint:UID:292:GID:292
 Group=x2gouser:GID:291
-User=x2goprint:UID:292:GID:292
-Group=x2goprint:GID:292
+  x2goprint:GID:292
 
 [dnscrypt-proxy]
 User=dnscrypt:UID:293:GID:293
@@ -381,7 +381,7 @@ Group=sabnzbd:GID:296
 [icinga]
 User=icinga:UID:297:GID:297
 Group=icinga:GID:297
-Group=icingacmd:GID:298
+  icingacmd:GID:298
 
 [graphite]
 User=graphite:UID:299:GID:299
@@ -451,7 +451,7 @@ Group=nixbld:GID:314
 User=elemental-ircd:UID:315:GID:315
 Group=elemental-ircd:GID:315
 
-[guixbuild]
+[guix]
 User=guixbuild:UID:316:GID:316
 Group=guixbuild:GID:316
 
@@ -459,7 +459,7 @@ Group=guixbuild:GID:316
 User=uinput-users:UID:317:GID:317
 Group=uinput-users:GID:317
 
-[roccat]
+[roccat-tools]
 User=roccat:UID:318:GID:318
 Group=roccat:GID:318
 
@@ -488,9 +488,9 @@ Group=sickrage:GID:324
 
 [stansoft]
 User=stansoft:UID:325:GID:325
+  informix:UID:326:GID:326
 Group=stansoft:GID:325
-User=informix:UID:326:GID:326
-Group=informix:GID:326
+  informix:GID:326
 
 [eprints]
 User=eprints:UID:327:GID:327
@@ -504,7 +504,7 @@ Group=bareos:GID:328
 User=oracle:UID:329:GID:329
 Group=dba:GID:329
 
-[openldap]
+[openldap-server]
 User=openldap:UID:330:GID:330
 Group=openldap:GID:330
 
@@ -518,8 +518,8 @@ Group=yadifa:GID:332
 
 [ossec]
 User=ossec:UID:333:GID:333
-User=ossecm:UID:334:GID:333
-User=ossecr:UID:335:GID:333
+  ossecm:UID:334:GID:333
+  ossecr:UID:335:GID:333
 Group=ossec:GID:333
 
 [nsd]
@@ -536,14 +536,14 @@ Group=netdata:GID:338
 
 [qmail]
 User=alias:UID:339:GID:340
-User=qmaild:UID:340:GID:340
-User=qmaill:UID:341:GID:340
-User=qmailp:UID:342:GID:340
-User=qmailq:UID:343:GID:339
-User=qmailr:UID:344:GID:339
-User=qmails:UID:345:GID:339
+  qmaild:UID:340:GID:340
+  qmaill:UID:341:GID:340
+  qmailp:UID:342:GID:340
+  qmailq:UID:343:GID:339
+  qmailr:UID:344:GID:339
+  qmails:UID:345:GID:339
 Group=qmail:GID:339
-Group=nofiles:GID:340
+  nofiles:GID:340
 
 [verm]
 User=verm:UID:346:GID:346
@@ -592,7 +592,7 @@ Group=sogo:GID:356
 [frr]
 User=frr:UID:357:GID:357
 Group=frr:GID:357
-Group=frrvty:GID:358
+  frrvty:GID:358
 
 [rspamd]
 User=rspamd:UID:359:GID:359
