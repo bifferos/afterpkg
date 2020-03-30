@@ -285,7 +285,7 @@ Group=freeswitch:GID:269
 User=smtpd:UID:270:GID:270
   smtpq:UID:271:GID:271
 
-[freeradius]
+[freeradius-server]
 User=radius:UID:272:GID:272
 Group=radius:GID:272
 
@@ -342,7 +342,7 @@ Group=mongo:GID:285
 User=svxlink:UID:286:GID:286
 Group=svxlink:GID:286
 
-[sonar]
+[sonarqube]
 User=svxlink:UID:287:GID:287
 Group=svxlink:GID:287
 
@@ -419,7 +419,7 @@ Group=cherokee:GID:306
 User=syncthing:UID:307:GID:307
 Group=syncthing:GID:307
 
-[munin]
+[munin-node]
 User=munin:UID:308:GID:308
 Group=munin:GID:308
 
@@ -467,11 +467,11 @@ Group=roccat:GID:318
 User=rabbitmq:UID:319:GID:319
 Group=rabbitmq:GID:319
 
-[nm-openvpn]
+[NetworkManager-openvpn]
 User=nm-openvpn:UID:320:GID:320
 Group=nm-openvpn:GID:320
 
-[nm-openconnect]
+[NetworkManager-openconnect]
 User=nm-openconnect:UID:321:GID:99
 
 [zookeeper]
