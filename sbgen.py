@@ -48,6 +48,11 @@ pip install --no-index --find-links /opt/afterpkg-python %(package)s
 pip3 install --no-index --find-links /opt/afterpkg-python %(package)s
 """
 
+do_uninstall_template = """
+pip uninstall %(package)s
+pip3 uninstall %(package)s
+"""
+
 
 build_template = """#!/bin/sh
 
@@ -99,9 +104,12 @@ mkdir -p $PKG/install
 mkdir -p $PKG/opt/afterpkg-python
 cat $CWD/slack-desc > $PKG/install/slack-desc
 cat $CWD/doinst.sh > $PKG/install/doinst.sh
+mkdir -p $PKG/var/lib/pkgtools/douninst.sh
+cat $CWD/douninst.sh > $PKG/var/lib/pkgtools/douninst.sh/$PRGNAM-$VERSION-$ARCH-$BUILD$TAG
 
-cp $CWD/*.whl $PKG/opt/afterpkg-python/
-cp $CWD/*.gz $PKG/opt/afterpkg-python/
+cp $CWD/*.whl $PKG/opt/afterpkg-python/ | true
+cp $CWD/*.gz $PKG/opt/afterpkg-python/ | true
+
 
 cd $PKG
 /sbin/makepkg -l y -c n $OUTPUT/$PRGNAM-$VERSION-$ARCH-$BUILD$TAG.${PKGTYPE:-tgz}
@@ -234,6 +242,7 @@ def generate_build(package):
 
     fields = get_info(package)
     render_template("doinst.sh", do_install_template, fields)
+    render_template("douninst.sh", do_uninstall_template, fields)
     render_template("README", readme_template, fields)
     render_template("slack-desc", desc_template, fields)
     render_template(package + ".SlackBuild", build_template, fields)
