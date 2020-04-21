@@ -1,29 +1,29 @@
-...because there aren't enough package installers for Slackware :).
+Package build automation for Slackware.
 
 ```
-usage: afterpkg [-h] [-s SLACKBUILDS] [-d] [-n NUMTHREADS] [-c] [-o] [-v] [-2]                                                                                          
-                [-3] [-p] [-b] [-a] [-r] [-g] [-q] [-t HOST]                                                                                                            
-                packages [packages ...]                                                                                                                                 
+usage: afterpkg [-h] [-s SLACKBUILDS] [-d] [-n NUMTHREADS] [-c] [-o] [-v] [-2]
+                [-3] [-p] [-b] [-a] [-r] [-g] [-q] [-t HOST] [-tp PORT]
+                packages [packages ...]
 
-Download, build and install packages from SBo-current. afterpkg expects a full                                                                                          
-install of -current and the SBo repo to be found at ~/.afterpkg/slackbuilds/,                                                                                           
-if missing the ponce repo will be cloned there. By default most functionality                                                                                           
-is enabled, the options described below mostly DISABLE things.                                                                                                          
+Download, build and install packages from SBo-current. afterpkg expects a full
+install of -current and the SBo repo to be found at ~/.afterpkg/slackbuilds/,
+if missing the ponce repo will be cloned there. By default most functionality
+is enabled, the options described below mostly DISABLE things.
 
-positional arguments:                                                                                                                                                   
-  packages              Package(s) to build. If dash '-' is specified, reads                                                                                            
-                        package list from stdin, one-per-line Hash characters                                                                                           
-                        '#' will be considered comments and those lines (or                                                                                             
-                        ends of lines) will be ignored.                                                                                                                 
+positional arguments:
+  packages              Package(s) to build. If dash '-' is specified, reads
+                        package list from stdin, one-per-line Hash characters
+                        '#' will be considered comments and those lines (or
+                        ends of lines) will be ignored.
 
-optional arguments:                                                                                                                                                     
-  -h, --help            show this help message and exit                                                                                                                 
-  -s SLACKBUILDS, --slackbuilds SLACKBUILDS                                                                                                                             
-                        Specify the slackbuild directory. The default is                                                                                                
-                        ~/.afterpkg/slackbuilds. This directory will be cloned                                                                                          
-                        from https://github.com/Ponce/slackbuilds.git if not                                                                                            
-                        present. This will happen regardless of the -d flag                                                                                             
-                        (it's not counted as doing anything). If you want a                                                                                             
+optional arguments:
+  -h, --help            show this help message and exit
+  -s SLACKBUILDS, --slackbuilds SLACKBUILDS
+                        Specify the slackbuild directory. The default is
+                        ~/.afterpkg/slackbuilds. This directory will be cloned
+                        from https://github.com/Ponce/slackbuilds.git if not
+                        present. This will happen regardless of the -d flag
+                        (it's not counted as doing anything). If you want a
                         different repository make sure this exists before
                         running.
   -d, --donothing       Don't actually do anything, just list the steps that
@@ -72,6 +72,11 @@ optional arguments:
                         update ~/.ssh/authorized_hosts on the host to avoid
                         password prompts as afterpkg will not prompt you and
                         just fail without this.
+  -tp PORT, --targetport PORT
+                        Specify the remote port for the target. This is useful
+                        if you've forwarded ports from a virtual machine to
+                        the host e.g. 22 -> 2222
+
 ```
 
 Afterpkg is for people who want to automate the the building of lots of 
@@ -145,3 +150,10 @@ makeup of the dependency tree will determine how efficient this is, but you
 can also combine with -j XX make options for packages that support it.  You
 can do this with the before scripts.
 
+JDK
+===
+
+The Oracle JDK download cannot be automated as you must login now.  Please
+put the JDK into ~/.afterpkg/downloads/development/jdk on the target 
+system so the build can pick it up if you're building packages that 
+depend on it.
