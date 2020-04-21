@@ -63,14 +63,16 @@ DOWNLOAD_LOCK = Lock()
 
 # Remote host to talk to, if requested on the command-line
 g_ssh_host = None
+# ssh (and scp) port
+g_ssh_port = 22
 
 
 def get_remote_command(command):
     """
-        Return the command to be executed, taking into account g_ssh_host setting.
+        Return the command to be executed, taking into account g_ssh_host, g_ssh_port settings.
     """
     if g_ssh_host:
-        command = f'ssh {g_ssh_host} "{command}"'
+        command = f'ssh -p {g_ssh_port} {g_ssh_host} "{command}"'
     else:
         command = command.replace("~", str(LOCAL_HOME_DIR))
     return command
@@ -84,7 +86,7 @@ def put_file_to_remote(src, dest):
     if g_ssh_host:
         if dest.startswith("~/"):
             dest = dest[2:]
-        command = f"scp -r {src} {g_ssh_host}:{dest}"
+        command = f"scp -P {g_ssh_port} -r {src} {g_ssh_host}:{dest}"
     else:
         command = f"cp -r {src} {dest}"
     return command
@@ -793,7 +795,9 @@ def build_packages(args):
     LOCAL_AFTERPKG_DIR.mkdir(exist_ok=True, parents=True)
 
     global g_ssh_host
+    global g_ssh_port
     g_ssh_host = args.targethost
+    g_ssh_port = args.targetport
 
     if "-" in args.packages:
         packages = read_packages_from_stdin(args.packages)
@@ -871,6 +875,9 @@ def main():
                         "defined in your ssh config.  You should employ ssh-copy-id or otherwise update "
                         f"~/.ssh/authorized_hosts on the host to avoid password prompts as {PROGNAME} will not prompt "
                         "you and just fail without this. ")
+    parser.add_argument("-tp", "--targetport", default=22, metavar='PORT',
+                        help="Specify the remote port for the target.  This is useful if you've forwarded ports from "
+                        "a virtual machine to the host e.g. 22 -> 2222  ")
 
     parser.add_argument("packages", default=False, nargs="+",
                         help="Package(s) to build.  If dash '-' is specified, reads package list from stdin, "
