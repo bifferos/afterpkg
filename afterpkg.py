@@ -105,16 +105,15 @@ def remote_popen(command):
 
 def find_scripts_location():
     """
-        If the script location is
+        If there is a scripts directory relative to this script dir, use that.
     """
-    # If this is running from a git repo, scripts are in subdirs.
-    p = Popen("git rev-parse --git-dir", stdout=PIPE, stderr=PIPE, shell=True, cwd=sys.path[0])
-    _, _ = p.communicate(b"")
-    if p.returncode == 0:
-        return Path(sys.path[0]) / "scripts"
-    else:
-        # Otherwise look for scripts in ~/.afterpkg/scripts
+    local_path = Path(sys.path[0]) / "scripts"
+    if local_path.exists():
+        return local_path
+    if SCRIPTS_DIR.exists():
         return SCRIPTS_DIR
+    print("No scripts directory found, giving up.")
+    sys.exit(1)
 
 
 class NoOpLock:
